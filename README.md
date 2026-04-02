@@ -21,67 +21,70 @@ jobs:
           pool: ci-small
           ttl: 1h
 
-      - name: Run tests against the cluster
+      - name: Run tests
         env:
           KUBECONFIG: ${{ steps.cluster.outputs.kubeconfig-path }}
         run: |
           kubectl get nodes
-          kubectl get namespaces
-          # ... run your e2e tests
+          # ... your e2e tests
 
-      # Cluster is automatically released when the job finishes
+      - name: Release cluster
+        if: always()
+        uses: kunobi-ninja/kobe-action/release@v1
+        with:
+          endpoint: https://kobe.example.com
+          lease-id: ${{ steps.cluster.outputs.lease-id }}
+          token: ${{ steps.cluster.outputs.token }}
 ```
 
-## Inputs
+## Actions
+
+### `kunobi-ninja/kobe-action@v1` — Claim
+
+Claims a cluster from a pool.
+
+**Inputs:**
 
 | Input | Required | Default | Description |
 |-------|----------|---------|-------------|
 | `endpoint` | Yes | | Kobe API endpoint URL |
 | `pool` | Yes | | Pool name to claim from |
-| `ttl` | No | `1h` | Lease TTL (e.g. `1h`, `30m`, `2h`) |
+| `ttl` | No | `1h` | Lease TTL (e.g. `1h`, `30m`) |
 | `audience` | No | `kobe-system` | OIDC token audience |
 
-## Outputs
+**Outputs:**
 
 | Output | Description |
 |--------|-------------|
 | `kubeconfig-path` | Path to the kubeconfig file |
-| `lease-id` | Lease ID (for manual management) |
+| `lease-id` | Lease ID (pass to release action) |
 | `cluster-name` | Name of the claimed cluster |
+| `token` | Auth token (pass to release action) |
+
+### `kunobi-ninja/kobe-action/release@v1` — Release
+
+Releases a previously claimed cluster. Use `if: always()` to ensure release even on failure.
+
+**Inputs:**
+
+| Input | Required | Description |
+|-------|----------|-------------|
+| `endpoint` | Yes | Kobe API endpoint URL |
+| `lease-id` | Yes | Lease ID from claim output |
+| `token` | Yes | Token from claim output |
 
 ## How it works
 
 1. Requests an OIDC token from GitHub Actions
-2. Sends a lease request to the Kobe API with the JWT
-3. Writes the kubeconfig to a temporary file
-4. Exposes the kubeconfig path as an output
-5. Automatically releases the cluster when the job finishes (even on failure)
+2. Claims a cluster via `POST /v1/leases`
+3. Writes kubeconfig to a temporary file
+4. Your steps use the cluster via `KUBECONFIG` env var
+5. Release action calls `DELETE /v1/leases/{id}` (runs even on failure with `if: always()`)
 
 ## Requirements
 
-- A Kobe operator running with an `AccessPolicy` configured for GitHub Actions OIDC
+- Kobe operator with an AccessPolicy for GitHub Actions OIDC
 - `permissions: id-token: write` on the job
-
-## AccessPolicy example
-
-```yaml
-apiVersion: kobe.kunobi.ninja/v1alpha1
-kind: AccessPolicy
-metadata:
-  name: github-actions
-  namespace: kobe-system
-spec:
-  auth:
-    oidc:
-      issuer: https://token.actions.githubusercontent.com
-      audience: [kobe-system]
-  identity: "repo:{repository}:ref:{ref}"
-  rules:
-    - pools: ["ci-*"]
-      maxTtl: 1h
-      maxConcurrentLeases: 5
-      maxExtensions: 2
-```
 
 ## License
 

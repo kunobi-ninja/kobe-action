@@ -1,0 +1,34 @@
+name: 'Kobe Cluster - Release'
+description: 'Release a previously claimed Kobe cluster lease'
+branding:
+  icon: 'server'
+  color: 'red'
+
+inputs:
+  endpoint:
+    description: 'Kobe API endpoint URL'
+    required: true
+  lease-id:
+    description: 'Lease ID to release'
+    required: true
+  token:
+    description: 'Auth token (from claim action output)'
+    required: true
+
+runs:
+  using: 'composite'
+  steps:
+    - name: Release cluster
+      shell: bash
+      env:
+        KOBE_TOKEN: ${{ inputs.token }}
+      run: |
+        HTTP_CODE=$(curl -sS -o /dev/null -w "%{http_code}" \
+          -X DELETE "${{ inputs.endpoint }}/v1/leases/${{ inputs.lease-id }}" \
+          -H "Authorization: Bearer $KOBE_TOKEN")
+
+        if [ "$HTTP_CODE" -ge 400 ]; then
+          echo "::warning::Failed to release lease ${{ inputs.lease-id }} (HTTP $HTTP_CODE)"
+        else
+          echo "::notice::Released cluster (lease: ${{ inputs.lease-id }})"
+        fi

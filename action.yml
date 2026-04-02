@@ -1,5 +1,5 @@
-name: 'Kobe Cluster'
-description: 'Claim a Kubernetes cluster from a Kobe pool and release it when done'
+name: 'Kobe Cluster - Claim'
+description: 'Claim a Kubernetes cluster from a Kobe pool'
 branding:
   icon: 'server'
   color: 'blue'
@@ -30,6 +30,9 @@ outputs:
   cluster-name:
     description: 'Name of the claimed cluster'
     value: ${{ steps.claim.outputs.cluster-name }}
+  token:
+    description: 'OIDC token (for use with release action)'
+    value: ${{ steps.oidc.outputs.token }}
 
 runs:
   using: 'composite'
@@ -79,54 +82,18 @@ runs:
           exit 1
         fi
 
-        # Write kubeconfig to file
         KUBECONFIG_PATH="$RUNNER_TEMP/kobe-kubeconfig-$LEASE_ID"
         if [ -n "$KUBECONFIG_DATA" ] && [ "$KUBECONFIG_DATA" != "null" ]; then
           echo "$KUBECONFIG_DATA" > "$KUBECONFIG_PATH"
-          chmod 600 "$KUBECONFIG_PATH"
         else
-          # Fetch kubeconfig separately
           KC_RESPONSE=$(curl -sS -X GET "${{ inputs.endpoint }}/v1/leases/$LEASE_ID" \
             -H "Authorization: Bearer $KOBE_TOKEN")
           echo "$KC_RESPONSE" | jq -r '.kubeconfig' > "$KUBECONFIG_PATH"
-          chmod 600 "$KUBECONFIG_PATH"
         fi
+        chmod 600 "$KUBECONFIG_PATH"
 
         echo "lease-id=$LEASE_ID" >> "$GITHUB_OUTPUT"
         echo "cluster-name=$CLUSTER_NAME" >> "$GITHUB_OUTPUT"
         echo "kubeconfig-path=$KUBECONFIG_PATH" >> "$GITHUB_OUTPUT"
 
-        # Save for post step
-        echo "$LEASE_ID" > "$RUNNER_TEMP/.kobe-lease-id"
-        echo "${{ inputs.endpoint }}" > "$RUNNER_TEMP/.kobe-endpoint"
-        cp "$RUNNER_TEMP/.kobe-lease-id" "$GITHUB_STATE" 2>/dev/null || true
-
         echo "::notice::Claimed cluster $CLUSTER_NAME (lease: $LEASE_ID)"
-
-    - name: Release cluster
-      if: always()
-      shell: bash
-      env:
-        KOBE_TOKEN: ${{ steps.oidc.outputs.token }}
-      run: |
-        LEASE_ID=$(cat "$RUNNER_TEMP/.kobe-lease-id" 2>/dev/null || echo "")
-        ENDPOINT=$(cat "$RUNNER_TEMP/.kobe-endpoint" 2>/dev/null || echo "")
-
-        if [ -z "$LEASE_ID" ] || [ -z "$ENDPOINT" ]; then
-          echo "No lease to release"
-          exit 0
-        fi
-
-        HTTP_CODE=$(curl -sS -o /dev/null -w "%{http_code}" -X DELETE "$ENDPOINT/v1/leases/$LEASE_ID" \
-          -H "Authorization: Bearer $KOBE_TOKEN")
-
-        if [ "$HTTP_CODE" -ge 400 ]; then
-          echo "::warning::Failed to release lease $LEASE_ID (HTTP $HTTP_CODE)"
-        else
-          echo "::notice::Released cluster (lease: $LEASE_ID)"
-        fi
-
-        # Cleanup
-        rm -f "$RUNNER_TEMP/kobe-kubeconfig-$LEASE_ID" \
-              "$RUNNER_TEMP/.kobe-lease-id" \
-              "$RUNNER_TEMP/.kobe-endpoint"
