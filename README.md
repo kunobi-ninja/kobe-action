@@ -1,85 +1,77 @@
-# Kobe Action
+# Kobe Cluster Action
 
-GitHub Action for claiming Kubernetes clusters from [Kobe](https://github.com/kunobi-ninja/kobe) pools.
+Claim a Kubernetes cluster from a [Kobe](https://github.com/kunobi-ninja/kobe) pool for CI/CD. The cluster is **automatically released** when the job finishes -- no cleanup step needed.
 
 ## Usage
 
 ```yaml
+permissions:
+  id-token: write   # Required for OIDC authentication
+
 jobs:
-  e2e-tests:
+  test:
     runs-on: ubuntu-latest
-    permissions:
-      id-token: write  # Required for OIDC
-
     steps:
-      - uses: actions/checkout@v4
-
-      - uses: kunobi-ninja/kobe-action@v1
+      - uses: kunobi-ninja/kobe-action@v2
         id: cluster
         with:
           endpoint: https://kobe.example.com
           pool: ci-small
-          ttl: 1h
 
-      - name: Run tests
-        env:
-          KUBECONFIG: ${{ steps.cluster.outputs.kubeconfig-path }}
-        run: |
-          kubectl get nodes
-          # ... your e2e tests
+      - run: kubectl --kubeconfig=${{ steps.cluster.outputs.kubeconfig-path }} get nodes
 
-      - name: Release cluster
-        if: always()
-        uses: kunobi-ninja/kobe-action/release@v1
-        with:
-          endpoint: https://kobe.example.com
-          lease-id: ${{ steps.cluster.outputs.lease-id }}
-          token: ${{ steps.cluster.outputs.token }}
+      # No release step needed -- auto-cleanup via post hook!
 ```
 
-## Actions
+## How it works
 
-### `kunobi-ninja/kobe-action@v1` — Claim
+1. Acquires a GitHub OIDC token for authentication
+2. Creates a lease via the Kobe API (`POST /v1/leases`)
+3. If the pool is exhausted (HTTP 503), retries with exponential backoff
+4. If the lease is queued (Pending phase), polls until the cluster is Bound
+5. Writes the kubeconfig to a temp file and exposes the path as an output
+6. On job exit (success, failure, or cancellation), the `post` hook automatically releases the lease
 
-Claims a cluster from a pool.
-
-**Inputs:**
+## Inputs
 
 | Input | Required | Default | Description |
 |-------|----------|---------|-------------|
 | `endpoint` | Yes | | Kobe API endpoint URL |
-| `pool` | Yes | | Pool name to claim from |
+| `pool` | Yes | | Pool name to claim from (e.g. `ci-small`) |
 | `ttl` | No | `1h` | Lease TTL (e.g. `1h`, `30m`) |
 | `audience` | No | `kobe-system` | OIDC token audience |
+| `timeout` | No | `5m` | Max time to wait for cluster to be ready |
 
-**Outputs:**
+## Outputs
 
 | Output | Description |
 |--------|-------------|
 | `kubeconfig-path` | Path to the kubeconfig file |
-| `lease-id` | Lease ID (pass to release action) |
+| `lease-id` | Lease ID |
 | `cluster-name` | Name of the claimed cluster |
-| `token` | Auth token (pass to release action) |
 
-### `kunobi-ninja/kobe-action/release@v1` — Release
+## Migration from v1
 
-Releases a previously claimed cluster. Use `if: always()` to ensure release even on failure.
+v1 used a composite action with separate claim/release steps. v2 is a Node.js action with a `post` hook, so you no longer need a release step:
 
-**Inputs:**
+```diff
+- - uses: kunobi-ninja/kobe-action@v1
++ - uses: kunobi-ninja/kobe-action@v2
+    id: cluster
+    with:
+      endpoint: https://kobe.example.com
+      pool: ci-small
 
-| Input | Required | Description |
-|-------|----------|-------------|
-| `endpoint` | Yes | Kobe API endpoint URL |
-| `lease-id` | Yes | Lease ID from claim output |
-| `token` | Yes | Token from claim output |
+  - run: kubectl --kubeconfig=${{ steps.cluster.outputs.kubeconfig-path }} get nodes
 
-## How it works
-
-1. Requests an OIDC token from GitHub Actions
-2. Claims a cluster via `POST /v1/leases`
-3. Writes kubeconfig to a temporary file
-4. Your steps use the cluster via `KUBECONFIG` env var
-5. Release action calls `DELETE /v1/leases/{id}` (runs even on failure with `if: always()`)
+- - uses: kunobi-ninja/kobe-action/release@v1
+-   if: always()
+-   with:
+-     endpoint: https://kobe.example.com
+-     lease-id: ${{ steps.cluster.outputs.lease-id }}
+-     token: ${{ steps.cluster.outputs.token }}
++ # Release is automatic -- nothing to add!
+```
 
 ## Requirements
 
