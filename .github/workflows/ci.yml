@@ -1,0 +1,43 @@
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+jobs:
+  test:
+    name: Lint, Test, Coverage, Verify dist
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Lint (typecheck)
+        run: npm run lint
+
+      - name: Test with coverage
+        run: npm run test:coverage
+
+      # Ensures dist/ is rebuilt whenever src/ changes — catches the
+      # "forgot to rebuild bundle before pushing" bug class. The action
+      # ships dist/ and consumers reference it directly, so a stale dist
+      # silently runs the wrong code.
+      - name: Verify dist/ is up to date
+        run: npm run verify-dist
+
+      - name: Upload coverage artifact
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: coverage
+          path: coverage/
+          if-no-files-found: ignore
