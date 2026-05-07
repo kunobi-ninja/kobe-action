@@ -40,12 +40,14 @@ export default defineConfig({
           branches: 70,
           functions: 22,
         },
-        // Phase 1 starts at 0; Phase 2 raises this to 80/70/80 once
-        // the nock-backed contract tests are in.
+        // Raised from 0/0/0 now that `src/client.test.ts` pins the
+        // HTTP contract end-to-end. Actual coverage today is
+        // 98.96/86.48/100 — the gate at 80/70/80 leaves headroom for
+        // adding non-critical branches without immediate test work.
         'src/client.ts': {
-          lines: 0,
-          branches: 0,
-          functions: 0,
+          lines: 80,
+          branches: 70,
+          functions: 80,
         },
         // Orchestration / runner-bound modules. Coverage still tracked,
         // but no threshold gate — testing them requires mocking the
