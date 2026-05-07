@@ -34,6 +34,14 @@ jobs:
       - name: Test with coverage
         run: npm run test:coverage
 
+      # Replaces vitest's built-in `coverage.thresholds` block: surfaces
+      # coverage drift as a discrete CI step (easier to read than a
+      # buried vitest summary), and lets contributors run the same gate
+      # locally with `npm run check-coverage`. Floors live in
+      # `coverage-thresholds.json`.
+      - name: Enforce coverage thresholds
+        run: npm run check-coverage
+
       # Ensures dist/ is rebuilt whenever src/ changes — catches the
       # "forgot to rebuild bundle before pushing" bug class. The action
       # ships dist/ and consumers reference it directly, so a stale dist
