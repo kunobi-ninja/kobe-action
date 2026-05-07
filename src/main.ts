@@ -3,18 +3,8 @@ import * as fs from 'fs';
 import * as path from 'path';
 import { getOidcToken } from './oidc';
 import { KobeClient } from './client';
-
-function parseTimeout(timeout: string): number {
-  const match = timeout.match(/^(\d+)(m|s|h)$/);
-  if (!match) return 300000; // default 5m
-  const value = parseInt(match[1], 10);
-  switch (match[2]) {
-    case 'h': return value * 3600000;
-    case 'm': return value * 60000;
-    case 's': return value * 1000;
-    default: return 300000;
-  }
-}
+import { detectBackend, waitForReady } from './readiness';
+import { parseBool, parseDuration, parseNonNegInt } from './inputs';
 
 async function run(): Promise<void> {
   try {
@@ -22,7 +12,16 @@ async function run(): Promise<void> {
     const pool = core.getInput('pool', { required: true });
     const ttl = core.getInput('ttl') || '1h';
     const audience = core.getInput('audience') || 'kobe-system';
-    const timeout = parseTimeout(core.getInput('timeout') || '5m');
+    const timeout = parseDuration(core.getInput('timeout'), 5 * 60_000);
+    // Readiness-wait inputs (default off — backward-compatible: existing
+    // consumers see no behavior change).
+    const waitReady = parseBool(core.getInput('wait-for-ready'), false);
+    // Default 0 so single-node k3s/k0s server pools (the most common CI
+    // shape) pass the gate without explicit configuration. Multi-node
+    // setups should set `min-ready-nodes: 1` (or higher) to require a
+    // worker. See README "Waiting for cluster readiness".
+    const minReadyNodes = parseNonNegInt(core.getInput('min-ready-nodes'), 0);
+    const readyTimeout = parseDuration(core.getInput('ready-timeout'), 2 * 60_000);
 
     // Get OIDC token
     core.info('Requesting OIDC token...');
@@ -65,10 +64,34 @@ async function run(): Promise<void> {
     const kubeconfigPath = path.join(tmpDir, `kobe-kubeconfig-${lease.id}`);
     fs.writeFileSync(kubeconfigPath, kubeconfig, { mode: 0o600 });
 
+    // Always probe the backend — it's free info that lets downstream
+    // steps run backend-aware logic without re-querying. Failures
+    // surface as warnings (not silent) but never fail the action;
+    // the `cluster-backend` output is documented as informational.
+    const backend = await detectBackend(kubeconfigPath);
+    if (backend !== 'unknown') {
+      core.info(`Detected cluster backend: ${backend}`);
+    }
+
+    // Optional readiness gate. The lease is `Bound` (API server reachable)
+    // by this point, but worker Pods may still be registering as Nodes.
+    // Tests that hit `kubectl get nodes` immediately can race that window.
+    // Auto-discovery: every supported backend reports Node objects with
+    // a standard Ready condition, so a single polling loop covers them all.
+    if (waitReady) {
+      await waitForReady({
+        kubeconfig: kubeconfigPath,
+        minReadyNodes,
+        timeoutMs: readyTimeout,
+        backend,
+      });
+    }
+
     // Set outputs
     core.setOutput('kubeconfig-path', kubeconfigPath);
     core.setOutput('lease-id', lease.id);
     core.setOutput('cluster-name', clusterName);
+    core.setOutput('cluster-backend', backend);
 
     core.notice(`Cluster ${clusterName} ready (lease: ${lease.id})`);
   } catch (error) {
