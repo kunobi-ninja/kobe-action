@@ -30050,8 +30050,8 @@ const yaml = __importStar(__nccwpck_require__(4281));
  * Format: `kobe-{pool}-{first 8 chars of lease id, sans "lease-" prefix}`.
  *
  * Examples:
- *   pool=ci-k3s-small,  lease=lease-aceac0bbb7df... → kobe-ci-k3s-small-aceac0bb
- *   pool=ci-k3s-kunobi, lease=ccf4f21830b9         → kobe-ci-k3s-kunobi-ccf4f218
+ *   pool=ci-small, lease=lease-aceac0bbb7df... → kobe-ci-small-aceac0bb
+ *   pool=ci-large, lease=ccf4f21830b9          → kobe-ci-large-ccf4f218
  */
 function localKubeconfigAlias(pool, leaseId) {
     const stripped = leaseId.startsWith('lease-') ? leaseId.slice('lease-'.length) : leaseId;
@@ -30213,8 +30213,8 @@ async function run() {
         // rely on a stable `kobe-` prefix regardless of which interface
         // (CLI or this action) created the lease. Without this rewrite, the
         // raw API kubeconfig carries `lease-<id>` as the context name, and
-        // downstream filters that expect `kobe-` (kunobi-frontend's e2e
-        // variant filter is one example) silently drop it.
+        // downstream filters that key off the `kobe-` prefix silently
+        // drop it.
         const alias = (0, kubeconfig_1.localKubeconfigAlias)(pool, lease.id);
         const rewritten = (0, kubeconfig_1.rewriteKubeconfigNames)(kubeconfig, alias);
         const tmpDir = process.env.RUNNER_TEMP || '/tmp';

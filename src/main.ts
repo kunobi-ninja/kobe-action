@@ -68,8 +68,8 @@ async function run(): Promise<void> {
     // rely on a stable `kobe-` prefix regardless of which interface
     // (CLI or this action) created the lease. Without this rewrite, the
     // raw API kubeconfig carries `lease-<id>` as the context name, and
-    // downstream filters that expect `kobe-` (kunobi-frontend's e2e
-    // variant filter is one example) silently drop it.
+    // downstream filters that key off the `kobe-` prefix silently
+    // drop it.
     const alias = localKubeconfigAlias(pool, lease.id);
     const rewritten = rewriteKubeconfigNames(kubeconfig, alias);
 

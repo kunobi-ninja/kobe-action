@@ -12,8 +12,8 @@ import * as yaml from 'js-yaml';
  * Format: `kobe-{pool}-{first 8 chars of lease id, sans "lease-" prefix}`.
  *
  * Examples:
- *   pool=ci-k3s-small,  lease=lease-aceac0bbb7df... → kobe-ci-k3s-small-aceac0bb
- *   pool=ci-k3s-kunobi, lease=ccf4f21830b9         → kobe-ci-k3s-kunobi-ccf4f218
+ *   pool=ci-small, lease=lease-aceac0bbb7df... → kobe-ci-small-aceac0bb
+ *   pool=ci-large, lease=ccf4f21830b9          → kobe-ci-large-ccf4f218
  */
 export function localKubeconfigAlias(pool: string, leaseId: string): string {
   const stripped = leaseId.startsWith('lease-') ? leaseId.slice('lease-'.length) : leaseId;

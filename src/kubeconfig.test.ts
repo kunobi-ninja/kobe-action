@@ -4,8 +4,8 @@ import { localKubeconfigAlias, rewriteKubeconfigNames } from './kubeconfig';
 
 describe('localKubeconfigAlias', () => {
   it.each([
-    ['ci-k3s-small', 'lease-aceac0bbb7df1234567890', 'kobe-ci-k3s-small-aceac0bb'],
-    ['ci-k3s-kunobi', 'lease-ccf4f21830b9', 'kobe-ci-k3s-kunobi-ccf4f218'],
+    ['ci-small', 'lease-aceac0bbb7df1234567890', 'kobe-ci-small-aceac0bb'],
+    ['ci-large', 'lease-ccf4f21830b9', 'kobe-ci-large-ccf4f218'],
     // Lease ID without the leading "lease-" prefix
     ['pool', 'abcdef12345', 'kobe-pool-abcdef12'],
     // Short lease ID — no slicing past the end
