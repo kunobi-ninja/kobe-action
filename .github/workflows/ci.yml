@@ -5,6 +5,13 @@ on:
   push:
     branches: [main]
 
+# Read access is the GitHub Actions default; pull-requests: write is
+# required by davelosert/vitest-coverage-report-action to post (and
+# update) a sticky coverage comment on the PR.
+permissions:
+  contents: read
+  pull-requests: write
+
 jobs:
   test:
     name: Lint, Test, Coverage, Verify dist
@@ -41,3 +48,14 @@ jobs:
           name: coverage
           path: coverage/
           if-no-files-found: ignore
+
+      # Posts a sticky coverage comment on PRs (subsequent runs update
+      # the same comment instead of stacking). Reads coverage/coverage-
+      # summary.json — vitest.config.ts already emits that reporter.
+      # Skipped on push events (no PR to comment on).
+      - name: Comment coverage report on PR
+        if: ${{ always() && github.event_name == 'pull_request' }}
+        uses: davelosert/vitest-coverage-report-action@v2
+        with:
+          json-summary-path: coverage/coverage-summary.json
+          json-final-path: coverage/coverage-final.json
