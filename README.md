@@ -105,6 +105,10 @@ v1 used a composite action with separate claim/release steps. v2 is a Node.js ac
 - Kobe operator with an AccessPolicy for GitHub Actions OIDC
 - `permissions: id-token: write` on the job
 
+## Contributing
+
+Coverage gates are configured in `coverage-thresholds.json` and enforced in CI by `scripts/check-coverage.mjs`. Run `npm run check-coverage` locally after `npm run test:coverage` to verify before pushing.
+
 ## License
 
 Apache-2.0

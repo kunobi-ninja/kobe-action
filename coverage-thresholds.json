@@ -1,0 +1,25 @@
+{
+  "$schema-comment": "Per-file coverage floors enforced by scripts/check-coverage.mjs in CI. Each file lists the minimum percentage for lines/branches/functions; CI fails if actual coverage drops below any. Files not listed are tracked in coverage but not gated. Update floors only when raising — lowering should require an explicit reason in the commit message.",
+  "files": {
+    "src/inputs.ts": {
+      "lines": 95,
+      "branches": 95,
+      "functions": 100
+    },
+    "src/kubeconfig.ts": {
+      "lines": 90,
+      "branches": 90,
+      "functions": 100
+    },
+    "src/readiness.ts": {
+      "lines": 80,
+      "branches": 80,
+      "functions": 80
+    },
+    "src/client.ts": {
+      "lines": 80,
+      "branches": 70,
+      "functions": 80
+    }
+  }
+}
