@@ -25702,7 +25702,12 @@ class KobeClient {
     }
     async createLease(pool, ttl) {
         const url = `${this.endpoint}/v1/leases`;
-        const body = JSON.stringify({ pool, ttl });
+        // Wire field is `profile`, not `pool` — that's the historical name kobe
+        // uses internally for ClusterPool resources, and what the API's
+        // `CreateLeaseRequest` deserializes (matches the kobe CLI's body shape).
+        // The action's user-facing input stays `pool` to match the CLI UX
+        // (`kobe lease <pool>`).
+        const body = JSON.stringify({ profile: pool, ttl });
         for (let attempt = 0; attempt <= RETRY_DELAYS.length; attempt++) {
             const response = await this.http.post(url, body);
             const responseBody = await response.readBody();
