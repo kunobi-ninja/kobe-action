@@ -25831,6 +25831,7 @@ const fs = __importStar(__nccwpck_require__(9896));
 const path = __importStar(__nccwpck_require__(6928));
 const oidc_1 = __nccwpck_require__(6434);
 const client_1 = __nccwpck_require__(9592);
+const readiness_1 = __nccwpck_require__(3079);
 function parseTimeout(timeout) {
     const match = timeout.match(/^(\d+)(m|s|h)$/);
     if (!match)
@@ -25843,6 +25844,14 @@ function parseTimeout(timeout) {
         default: return 300000;
     }
 }
+function parseBool(input, fallback) {
+    const v = input.trim().toLowerCase();
+    if (v === 'true' || v === '1' || v === 'yes')
+        return true;
+    if (v === 'false' || v === '0' || v === 'no' || v === '')
+        return fallback;
+    return fallback;
+}
 async function run() {
     try {
         const endpoint = core.getInput('endpoint', { required: true });
@@ -25850,6 +25859,11 @@ async function run() {
         const ttl = core.getInput('ttl') || '1h';
         const audience = core.getInput('audience') || 'kobe-system';
         const timeout = parseTimeout(core.getInput('timeout') || '5m');
+        // Readiness-wait inputs (default off — backward-compatible: existing
+        // consumers see no behavior change).
+        const waitReady = parseBool(core.getInput('wait-for-ready'), false);
+        const minReadyNodes = parseInt(core.getInput('min-ready-nodes') || '1', 10);
+        const readyTimeout = parseTimeout(core.getInput('ready-timeout') || '2m');
         // Get OIDC token
         core.info('Requesting OIDC token...');
         const token = await (0, oidc_1.getOidcToken)(audience);
@@ -25882,10 +25896,33 @@ async function run() {
         const tmpDir = process.env.RUNNER_TEMP || '/tmp';
         const kubeconfigPath = path.join(tmpDir, `kobe-kubeconfig-${lease.id}`);
         fs.writeFileSync(kubeconfigPath, kubeconfig, { mode: 0o600 });
+        // Always probe the backend — it's free info that lets downstream
+        // steps run backend-aware logic without re-querying. Backend detection
+        // depends on `kubectl` being on PATH; if it isn't, we surface
+        // `unknown` and continue (consumers who don't need this output won't
+        // notice).
+        const backend = await (0, readiness_1.detectBackend)(kubeconfigPath);
+        if (backend !== 'unknown') {
+            core.info(`Detected cluster backend: ${backend}`);
+        }
+        // Optional readiness gate. The lease is `Bound` (API server reachable)
+        // by this point, but worker Pods may still be registering as Nodes.
+        // Tests that hit `kubectl get nodes` immediately can race that window.
+        // Auto-discovery: every supported backend reports Node objects with
+        // a standard Ready condition, so a single polling loop covers them all.
+        if (waitReady) {
+            await (0, readiness_1.waitForReady)({
+                kubeconfig: kubeconfigPath,
+                minReadyNodes,
+                timeoutMs: readyTimeout,
+                backend,
+            });
+        }
         // Set outputs
         core.setOutput('kubeconfig-path', kubeconfigPath);
         core.setOutput('lease-id', lease.id);
         core.setOutput('cluster-name', clusterName);
+        core.setOutput('cluster-backend', backend);
         core.notice(`Cluster ${clusterName} ready (lease: ${lease.id})`);
     }
     catch (error) {
@@ -25955,6 +25992,177 @@ async function getOidcToken(audience) {
     }
     core.setSecret(response.result.value);
     return response.result.value;
+}
+
+
+/***/ }),
+
+/***/ 3079:
+/***/ (function(__unused_webpack_module, exports, __nccwpck_require__) {
+
+"use strict";
+
+var __createBinding = (this && this.__createBinding) || (Object.create ? (function(o, m, k, k2) {
+    if (k2 === undefined) k2 = k;
+    var desc = Object.getOwnPropertyDescriptor(m, k);
+    if (!desc || ("get" in desc ? !m.__esModule : desc.writable || desc.configurable)) {
+      desc = { enumerable: true, get: function() { return m[k]; } };
+    }
+    Object.defineProperty(o, k2, desc);
+}) : (function(o, m, k, k2) {
+    if (k2 === undefined) k2 = k;
+    o[k2] = m[k];
+}));
+var __setModuleDefault = (this && this.__setModuleDefault) || (Object.create ? (function(o, v) {
+    Object.defineProperty(o, "default", { enumerable: true, value: v });
+}) : function(o, v) {
+    o["default"] = v;
+});
+var __importStar = (this && this.__importStar) || (function () {
+    var ownKeys = function(o) {
+        ownKeys = Object.getOwnPropertyNames || function (o) {
+            var ar = [];
+            for (var k in o) if (Object.prototype.hasOwnProperty.call(o, k)) ar[ar.length] = k;
+            return ar;
+        };
+        return ownKeys(o);
+    };
+    return function (mod) {
+        if (mod && mod.__esModule) return mod;
+        var result = {};
+        if (mod != null) for (var k = ownKeys(mod), i = 0; i < k.length; i++) if (k[i] !== "default") __createBinding(result, mod, k[i]);
+        __setModuleDefault(result, mod);
+        return result;
+    };
+})();
+Object.defineProperty(exports, "__esModule", ({ value: true }));
+exports.detectBackend = detectBackend;
+exports.classifyGitVersion = classifyGitVersion;
+exports.waitForReady = waitForReady;
+const core = __importStar(__nccwpck_require__(7484));
+const node_child_process_1 = __nccwpck_require__(1421);
+const node_util_1 = __nccwpck_require__(7975);
+// Note: execFile is the shell-injection-safe form (args passed as a list,
+// not interpolated into a shell). We deliberately do NOT use exec().
+const runFile = (0, node_util_1.promisify)(node_child_process_1.execFile);
+async function kubectl(args, kubeconfig) {
+    return runFile('kubectl', ['--kubeconfig', kubeconfig, ...args], {
+        encoding: 'utf-8',
+        // Don't inherit caller's KUBECONFIG — the action's kubeconfig is the
+        // single source of truth for what cluster we're probing.
+        env: { ...process.env, KUBECONFIG: kubeconfig },
+    });
+}
+/**
+ * Detect the cluster's backend by inspecting the API server's
+ * `gitVersion` string. Returns `unknown` if no recognized marker is found
+ * (still valid — readiness check is backend-agnostic).
+ */
+async function detectBackend(kubeconfig) {
+    try {
+        const { stdout } = await kubectl(['version', '-o', 'json'], kubeconfig);
+        const parsed = JSON.parse(stdout);
+        const gitVersion = parsed.serverVersion?.gitVersion ?? '';
+        return classifyGitVersion(gitVersion);
+    }
+    catch (err) {
+        core.debug(`Backend detection failed: ${err instanceof Error ? err.message : String(err)}`);
+        return 'unknown';
+    }
+}
+function classifyGitVersion(gitVersion) {
+    // gitVersion examples:
+    //   k3s:       "v1.31.4+k3s1"
+    //   k0s:       "v1.31.4+k0s"
+    //   kind:      "v1.31.0" (no marker — needs node-label probe)
+    //   vcluster:  "v1.31.0+vcluster.0" (depends on vcluster image)
+    //   eks/gke:   plain "v1.31.4-eks-..." or "v1.31.4-gke..."
+    if (/\+k3s/i.test(gitVersion))
+        return 'k3s';
+    if (/\+k0s/i.test(gitVersion))
+        return 'k0s';
+    if (/\+vcluster/i.test(gitVersion))
+        return 'vcluster';
+    if (gitVersion === '')
+        return 'unknown';
+    // Plain semver — could be kind, capi-managed, or vanilla. Caller may
+    // refine via node labels (kind nodes have role=control-plane labels).
+    return 'kubernetes';
+}
+/**
+ * Block until the cluster's nodes are Ready.
+ *
+ * Auto-discovery rationale: every kobe-supported backend (k3s, k0s,
+ * kind, vcluster, capi-provisioned) exposes worker capacity through
+ * Node objects with a standard `Ready` condition. We don't need to
+ * special-case each backend — listing nodes and waiting for them all
+ * to be Ready handles every distro uniformly.
+ *
+ * Two ready-criteria layers:
+ *   1. ALL visible Nodes report `Ready=True`. This catches a
+ *      half-registered agent that's reachable but not yet schedulable.
+ *   2. AT LEAST `minReadyNodes` of those Ready nodes must be
+ *      non-control-plane (i.e., schedulable for app workloads). For
+ *      a single-node k3s server-only pool, set minReadyNodes=0.
+ */
+async function waitForReady(opts) {
+    const { kubeconfig, minReadyNodes, timeoutMs, backend } = opts;
+    const deadline = Date.now() + timeoutMs;
+    let lastResult = { totalNodes: 0, readyNodes: 0, workerNodes: 0, readyWorkerNodes: 0 };
+    let attempt = 0;
+    const backendLabel = backend && backend !== 'unknown' ? ` (${backend})` : '';
+    core.info(`Waiting for cluster nodes to be Ready${backendLabel}...`);
+    while (Date.now() < deadline) {
+        try {
+            const { stdout } = await kubectl(['get', 'nodes', '-o', 'json'], kubeconfig);
+            const parsed = JSON.parse(stdout);
+            lastResult = summarize(parsed);
+            const allReady = lastResult.totalNodes > 0 && lastResult.readyNodes === lastResult.totalNodes;
+            const enoughWorkers = lastResult.readyWorkerNodes >= minReadyNodes;
+            if (allReady && enoughWorkers) {
+                core.info(`✓ Cluster ready: ${lastResult.readyNodes}/${lastResult.totalNodes} nodes Ready` +
+                    (minReadyNodes > 0 ? ` (${lastResult.readyWorkerNodes} non-control-plane)` : ''));
+                return lastResult;
+            }
+            attempt += 1;
+            if (attempt === 3 || attempt % 10 === 0) {
+                // Surface progress on slow leases without spamming.
+                core.info(`  …still waiting: ${lastResult.readyNodes}/${lastResult.totalNodes} Ready, ` +
+                    `${lastResult.readyWorkerNodes}/${minReadyNodes} non-control-plane required`);
+            }
+        }
+        catch (err) {
+            core.debug(`kubectl get nodes failed (attempt ${attempt}): ${err instanceof Error ? err.message : String(err)}`);
+        }
+        await sleep(2_000);
+    }
+    throw new Error(`Timed out after ${Math.round(timeoutMs / 1000)}s waiting for cluster readiness. ` +
+        `Last seen: ${lastResult.readyNodes}/${lastResult.totalNodes} Ready, ` +
+        `${lastResult.readyWorkerNodes}/${minReadyNodes} non-control-plane required.`);
+}
+function summarize(nodes) {
+    let totalNodes = 0;
+    let readyNodes = 0;
+    let workerNodes = 0;
+    let readyWorkerNodes = 0;
+    for (const node of nodes.items ?? []) {
+        totalNodes += 1;
+        const ready = node.status?.conditions?.some((c) => c.type === 'Ready' && c.status === 'True') ?? false;
+        if (ready)
+            readyNodes += 1;
+        const labels = node.metadata?.labels ?? {};
+        const isControlPlane = 'node-role.kubernetes.io/control-plane' in labels ||
+            'node-role.kubernetes.io/master' in labels;
+        if (!isControlPlane) {
+            workerNodes += 1;
+            if (ready)
+                readyWorkerNodes += 1;
+        }
+    }
+    return { totalNodes, readyNodes, workerNodes, readyWorkerNodes };
+}
+function sleep(ms) {
+    return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
 
@@ -26061,6 +26269,14 @@ module.exports = require("https");
 
 "use strict";
 module.exports = require("net");
+
+/***/ }),
+
+/***/ 1421:
+/***/ ((module) => {
+
+"use strict";
+module.exports = require("node:child_process");
 
 /***/ }),
 

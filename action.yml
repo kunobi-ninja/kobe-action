@@ -20,9 +20,21 @@ inputs:
     required: false
     default: 'kobe-system'
   timeout:
-    description: 'Max time to wait for cluster to be ready (e.g. 5m)'
+    description: 'Max time to wait for the lease to become Bound (e.g. 5m)'
     required: false
     default: '5m'
+  wait-for-ready:
+    description: 'After lease is Bound, also wait until cluster nodes report Ready. Defaults to false for backward compatibility — set true to block until the cluster is fully usable for tests.'
+    required: false
+    default: 'false'
+  min-ready-nodes:
+    description: 'Minimum non-control-plane nodes that must be Ready (only used when wait-for-ready=true). Set to 0 to allow control-plane-only clusters.'
+    required: false
+    default: '1'
+  ready-timeout:
+    description: 'Max time to wait for cluster readiness after Bound (only used when wait-for-ready=true). Independent from `timeout`, which gates the Bound transition.'
+    required: false
+    default: '2m'
 
 outputs:
   kubeconfig-path:
@@ -31,6 +43,8 @@ outputs:
     description: 'Lease ID'
   cluster-name:
     description: 'Name of the claimed cluster'
+  cluster-backend:
+    description: 'Auto-detected cluster backend: k3s | k0s | vcluster | kubernetes | unknown. Always set when kubectl is on PATH; useful for backend-aware downstream steps. `kubernetes` covers vanilla / kind / capi-managed (gitVersion has no distro marker).'
 
 runs:
   using: 'node20'
