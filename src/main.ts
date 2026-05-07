@@ -5,6 +5,7 @@ import { getOidcToken } from './oidc';
 import { KobeClient } from './client';
 import { detectBackend, waitForReady } from './readiness';
 import { parseBool, parseDuration, parseNonNegInt } from './inputs';
+import { localKubeconfigAlias, rewriteKubeconfigNames } from './kubeconfig';
 
 async function run(): Promise<void> {
   try {
@@ -60,9 +61,21 @@ async function run(): Promise<void> {
       throw new Error('No kubeconfig returned by Kobe API');
     }
 
+    // Rewrite the kubeconfig's cluster/context/user names to a friendly
+    // `kobe-<pool>-<short-lease-id>` alias before writing to disk. This
+    // matches what the kobe CLI does (`rewrite_local_kubeconfig_names`
+    // in kobe's `src/cli/commands/lease_create.rs`), so consumers can
+    // rely on a stable `kobe-` prefix regardless of which interface
+    // (CLI or this action) created the lease. Without this rewrite, the
+    // raw API kubeconfig carries `lease-<id>` as the context name, and
+    // downstream filters that expect `kobe-` (kunobi-frontend's e2e
+    // variant filter is one example) silently drop it.
+    const alias = localKubeconfigAlias(pool, lease.id);
+    const rewritten = rewriteKubeconfigNames(kubeconfig, alias);
+
     const tmpDir = process.env.RUNNER_TEMP || '/tmp';
-    const kubeconfigPath = path.join(tmpDir, `kobe-kubeconfig-${lease.id}`);
-    fs.writeFileSync(kubeconfigPath, kubeconfig, { mode: 0o600 });
+    const kubeconfigPath = path.join(tmpDir, `${alias}.yaml`);
+    fs.writeFileSync(kubeconfigPath, rewritten, { mode: 0o600 });
 
     // Always probe the backend — it's free info that lets downstream
     // steps run backend-aware logic without re-querying. Failures

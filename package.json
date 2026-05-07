@@ -10,12 +10,14 @@
   },
   "dependencies": {
     "@actions/core": "^1.11.1",
-    "@actions/http-client": "^2.2.3"
+    "@actions/http-client": "^2.2.3",
+    "js-yaml": "^4.1.0"
   },
   "devDependencies": {
     "@vercel/ncc": "^0.38.3",
     "typescript": "^5.7.0",
     "@types/node": "^20.17.0",
+    "@types/js-yaml": "^4.0.9",
     "vitest": "^3.0.0"
   }
 }
