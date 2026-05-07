@@ -28,9 +28,9 @@ inputs:
     required: false
     default: 'false'
   min-ready-nodes:
-    description: 'Minimum non-control-plane nodes that must be Ready (only used when wait-for-ready=true). Set to 0 to allow control-plane-only clusters.'
+    description: 'Minimum non-control-plane nodes that must be Ready (only used when wait-for-ready=true). Default 0 — single-node k3s/k0s server pools (the common CI shape) pass without further config since the server itself is labeled control-plane. Set to 1 or higher for multi-node setups that require a worker.'
     required: false
-    default: '1'
+    default: '0'
   ready-timeout:
     description: 'Max time to wait for cluster readiness after Bound (only used when wait-for-ready=true). Independent from `timeout`, which gates the Bound transition.'
     required: false
@@ -44,7 +44,7 @@ outputs:
   cluster-name:
     description: 'Name of the claimed cluster'
   cluster-backend:
-    description: 'Auto-detected cluster backend: k3s | k0s | vcluster | kubernetes | unknown. Always set when kubectl is on PATH; useful for backend-aware downstream steps. `kubernetes` covers vanilla / kind / capi-managed (gitVersion has no distro marker).'
+    description: 'Auto-detected cluster backend: k3s | k0s | kubernetes | unknown. Always set when kubectl is on PATH; useful for backend-aware downstream steps. The `kubernetes` value is a generic bucket covering vanilla, kind, capi-managed, EKS/GKE/AKS, and vcluster (vcluster reports the underlying distro''s gitVersion — typically k3s).'
 
 runs:
   using: 'node20'

@@ -25787,6 +25787,96 @@ function sleep(ms) {
 
 /***/ }),
 
+/***/ 8422:
+/***/ ((__unused_webpack_module, exports) => {
+
+"use strict";
+
+/**
+ * Strict parsers for action.yml inputs.
+ *
+ * Strictness rationale: action inputs come from user-authored workflow YAML.
+ * Silently coercing typos (`ture`, `30sec`, `abc`) to a fallback hides
+ * configuration bugs in CI logs. Each parser throws a descriptive
+ * `Error` so the failure surfaces at job startup instead of as a delayed
+ * timeout or wrong-default behavior.
+ *
+ * Every parser accepts the empty string (the value `core.getInput`
+ * returns when an input isn't set) and applies the documented default,
+ * so the action's defaults still flow through cleanly.
+ */
+Object.defineProperty(exports, "__esModule", ({ value: true }));
+exports.parseBool = parseBool;
+exports.parseDuration = parseDuration;
+exports.parseNonNegInt = parseNonNegInt;
+/**
+ * Parse a "wait-for-ready"-style boolean input.
+ *
+ * Accepts (case-insensitive): `true | 1 | yes` → true; `false | 0 | no`
+ * → false; empty string → `fallback`. Any other non-empty value throws —
+ * we don't want `wait-for-ready: ture` silently using the default.
+ */
+function parseBool(input, fallback) {
+    const v = input.trim().toLowerCase();
+    if (v === '')
+        return fallback;
+    if (v === 'true' || v === '1' || v === 'yes')
+        return true;
+    if (v === 'false' || v === '0' || v === 'no')
+        return false;
+    throw new Error(`Invalid boolean: "${input}". Expected one of: true, false, 1, 0, yes, no.`);
+}
+/**
+ * Parse a duration string like `30s`, `5m`, `1h` to milliseconds.
+ *
+ * Empty string → `defaultMs`. Anything that doesn't match the strict
+ * `<int><unit>` shape throws — the previous silent fallback to 5 minutes
+ * could make a typo'd `ready-timeout: 30sec` accept ~10× the intended
+ * window without any warning.
+ */
+function parseDuration(input, defaultMs) {
+    if (input.trim() === '')
+        return defaultMs;
+    const match = input.trim().match(/^(\d+)(s|m|h)$/);
+    if (!match) {
+        throw new Error(`Invalid duration: "${input}". Expected formats like 30s, 5m, 1h.`);
+    }
+    const value = parseInt(match[1], 10);
+    switch (match[2]) {
+        case 'h':
+            return value * 3_600_000;
+        case 'm':
+            return value * 60_000;
+        case 's':
+            return value * 1_000;
+        default:
+            // Unreachable — the regex guarantees one of the above.
+            throw new Error(`Invalid duration unit: "${match[2]}"`);
+    }
+}
+/**
+ * Parse a non-negative integer input.
+ *
+ * Empty string → `fallback`. Non-numeric input (or a decimal) throws —
+ * the previous `parseInt('abc', 10)` would silently produce `NaN`,
+ * making downstream `>=` comparisons always false and exhausting the
+ * action's timeout window with no diagnostic pointing at the typo.
+ */
+function parseNonNegInt(input, fallback) {
+    const trimmed = input.trim();
+    if (trimmed === '')
+        return fallback;
+    // Reject anything that isn't purely digits — `parseInt` is too permissive
+    // (`"1.5"` becomes `1`, `"5x"` becomes `5`).
+    if (!/^\d+$/.test(trimmed)) {
+        throw new Error(`Invalid non-negative integer: "${input}". Expected a whole number ≥ 0.`);
+    }
+    return parseInt(trimmed, 10);
+}
+
+
+/***/ }),
+
 /***/ 1730:
 /***/ (function(__unused_webpack_module, exports, __nccwpck_require__) {
 
@@ -25832,38 +25922,23 @@ const path = __importStar(__nccwpck_require__(6928));
 const oidc_1 = __nccwpck_require__(6434);
 const client_1 = __nccwpck_require__(9592);
 const readiness_1 = __nccwpck_require__(3079);
-function parseTimeout(timeout) {
-    const match = timeout.match(/^(\d+)(m|s|h)$/);
-    if (!match)
-        return 300000; // default 5m
-    const value = parseInt(match[1], 10);
-    switch (match[2]) {
-        case 'h': return value * 3600000;
-        case 'm': return value * 60000;
-        case 's': return value * 1000;
-        default: return 300000;
-    }
-}
-function parseBool(input, fallback) {
-    const v = input.trim().toLowerCase();
-    if (v === 'true' || v === '1' || v === 'yes')
-        return true;
-    if (v === 'false' || v === '0' || v === 'no' || v === '')
-        return fallback;
-    return fallback;
-}
+const inputs_1 = __nccwpck_require__(8422);
 async function run() {
     try {
         const endpoint = core.getInput('endpoint', { required: true });
         const pool = core.getInput('pool', { required: true });
         const ttl = core.getInput('ttl') || '1h';
         const audience = core.getInput('audience') || 'kobe-system';
-        const timeout = parseTimeout(core.getInput('timeout') || '5m');
+        const timeout = (0, inputs_1.parseDuration)(core.getInput('timeout'), 5 * 60_000);
         // Readiness-wait inputs (default off — backward-compatible: existing
         // consumers see no behavior change).
-        const waitReady = parseBool(core.getInput('wait-for-ready'), false);
-        const minReadyNodes = parseInt(core.getInput('min-ready-nodes') || '1', 10);
-        const readyTimeout = parseTimeout(core.getInput('ready-timeout') || '2m');
+        const waitReady = (0, inputs_1.parseBool)(core.getInput('wait-for-ready'), false);
+        // Default 0 so single-node k3s/k0s server pools (the most common CI
+        // shape) pass the gate without explicit configuration. Multi-node
+        // setups should set `min-ready-nodes: 1` (or higher) to require a
+        // worker. See README "Waiting for cluster readiness".
+        const minReadyNodes = (0, inputs_1.parseNonNegInt)(core.getInput('min-ready-nodes'), 0);
+        const readyTimeout = (0, inputs_1.parseDuration)(core.getInput('ready-timeout'), 2 * 60_000);
         // Get OIDC token
         core.info('Requesting OIDC token...');
         const token = await (0, oidc_1.getOidcToken)(audience);
@@ -25897,10 +25972,9 @@ async function run() {
         const kubeconfigPath = path.join(tmpDir, `kobe-kubeconfig-${lease.id}`);
         fs.writeFileSync(kubeconfigPath, kubeconfig, { mode: 0o600 });
         // Always probe the backend — it's free info that lets downstream
-        // steps run backend-aware logic without re-querying. Backend detection
-        // depends on `kubectl` being on PATH; if it isn't, we surface
-        // `unknown` and continue (consumers who don't need this output won't
-        // notice).
+        // steps run backend-aware logic without re-querying. Failures
+        // surface as warnings (not silent) but never fail the action;
+        // the `cluster-backend` output is documented as informational.
         const backend = await (0, readiness_1.detectBackend)(kubeconfigPath);
         if (backend !== 'unknown') {
             core.info(`Detected cluster backend: ${backend}`);
@@ -26039,54 +26113,89 @@ Object.defineProperty(exports, "__esModule", ({ value: true }));
 exports.detectBackend = detectBackend;
 exports.classifyGitVersion = classifyGitVersion;
 exports.waitForReady = waitForReady;
+exports.summarize = summarize;
 const core = __importStar(__nccwpck_require__(7484));
 const node_child_process_1 = __nccwpck_require__(1421);
 const node_util_1 = __nccwpck_require__(7975);
 // Note: execFile is the shell-injection-safe form (args passed as a list,
 // not interpolated into a shell). We deliberately do NOT use exec().
 const runFile = (0, node_util_1.promisify)(node_child_process_1.execFile);
+/** Errors that should fail-fast — retrying won't help. */
+const FATAL_EXEC_ERROR_CODES = new Set(['ENOENT', 'EACCES', 'EPERM']);
 async function kubectl(args, kubeconfig) {
-    return runFile('kubectl', ['--kubeconfig', kubeconfig, ...args], {
+    // `--request-timeout=10s` caps any single call so a stalled API server
+    // doesn't hang the action's poll loop on one iteration. Belt-and-
+    // suspenders: kubeconfig flag + KUBECONFIG env both pin the target
+    // cluster (the flag wins; env is a guard against caller-injected env).
+    return runFile('kubectl', ['--kubeconfig', kubeconfig, '--request-timeout=10s', ...args], {
         encoding: 'utf-8',
-        // Don't inherit caller's KUBECONFIG — the action's kubeconfig is the
-        // single source of truth for what cluster we're probing.
         env: { ...process.env, KUBECONFIG: kubeconfig },
     });
 }
+function isFatalExecError(err) {
+    return typeof err === 'object' && err !== null && FATAL_EXEC_ERROR_CODES.has(err.code ?? '');
+}
+function isVersionResult(value) {
+    if (typeof value !== 'object' || value === null)
+        return false;
+    const sv = value.serverVersion;
+    if (sv === undefined)
+        return true;
+    if (typeof sv !== 'object' || sv === null)
+        return false;
+    const gv = sv.gitVersion;
+    return gv === undefined || typeof gv === 'string';
+}
+function isNodeListResult(value) {
+    if (typeof value !== 'object' || value === null)
+        return false;
+    return Array.isArray(value.items);
+}
 /**
  * Detect the cluster's backend by inspecting the API server's
- * `gitVersion` string. Returns `unknown` if no recognized marker is found
- * (still valid — readiness check is backend-agnostic).
+ * `gitVersion` string.
+ *
+ * Returns `unknown` on any failure — the `cluster-backend` output is
+ * documented as informational, so a probe failure shouldn't fail the
+ * action. Failures are surfaced as warnings (not debug-only) so users
+ * see something at default log level rather than a silent `unknown`.
  */
 async function detectBackend(kubeconfig) {
     try {
         const { stdout } = await kubectl(['version', '-o', 'json'], kubeconfig);
         const parsed = JSON.parse(stdout);
+        if (!isVersionResult(parsed)) {
+            core.warning('Backend detection: unexpected kubectl version JSON shape');
+            return 'unknown';
+        }
         const gitVersion = parsed.serverVersion?.gitVersion ?? '';
         return classifyGitVersion(gitVersion);
     }
     catch (err) {
-        core.debug(`Backend detection failed: ${err instanceof Error ? err.message : String(err)}`);
+        const msg = err instanceof Error ? err.message : String(err);
+        core.warning(`Backend detection failed: ${msg}`);
         return 'unknown';
     }
 }
 function classifyGitVersion(gitVersion) {
-    // gitVersion examples:
-    //   k3s:       "v1.31.4+k3s1"
-    //   k0s:       "v1.31.4+k0s"
-    //   kind:      "v1.31.0" (no marker — needs node-label probe)
-    //   vcluster:  "v1.31.0+vcluster.0" (depends on vcluster image)
-    //   eks/gke:   plain "v1.31.4-eks-..." or "v1.31.4-gke..."
+    // Real-world `serverVersion.gitVersion` examples:
+    //   k3s:        "v1.31.4+k3s1"
+    //   k0s:        "v1.31.4+k0s"
+    //   kind:       "v1.31.0"           (plain semver; no marker)
+    //   eks/gke:    "v1.31.4-eks-..." / "v1.31.4-gke..."  (vendor suffix)
+    //   vcluster:   inherits underlying distro, usually "+k3s1"
+    //
+    // Order matters: check `+k3s` before `+k0s` (otherwise harmless, but
+    // mirrors how distros version themselves alphabetically in the wild).
     if (/\+k3s/i.test(gitVersion))
         return 'k3s';
     if (/\+k0s/i.test(gitVersion))
         return 'k0s';
-    if (/\+vcluster/i.test(gitVersion))
-        return 'vcluster';
     if (gitVersion === '')
         return 'unknown';
-    // Plain semver — could be kind, capi-managed, or vanilla. Caller may
-    // refine via node labels (kind nodes have role=control-plane labels).
+    // Plain semver / vendor suffix — covers vanilla, kind, capi-managed,
+    // EKS, GKE, AKS, vcluster's k3s-backed variant, etc. All work
+    // identically for readiness; the bucket is intentionally broad.
     return 'kubernetes';
 }
 /**
@@ -26104,42 +26213,83 @@ function classifyGitVersion(gitVersion) {
  *   2. AT LEAST `minReadyNodes` of those Ready nodes must be
  *      non-control-plane (i.e., schedulable for app workloads). For
  *      a single-node k3s server-only pool, set minReadyNodes=0.
+ *
+ * Error handling:
+ *   - Fatal `execFile` errors (ENOENT/EACCES/EPERM — kubectl missing,
+ *     kubeconfig unreadable) throw immediately; retrying won't help and
+ *     a 2-minute hang on these is worse than a fast, clear failure.
+ *   - Transient errors (network blip, API server still starting) are
+ *     surfaced as warnings after the first occurrence, then re-tried.
+ *   - The timeout exception includes the last seen error so users don't
+ *     need ACTIONS_STEP_DEBUG=true to see why polls failed.
  */
 async function waitForReady(opts) {
     const { kubeconfig, minReadyNodes, timeoutMs, backend } = opts;
     const deadline = Date.now() + timeoutMs;
     let lastResult = { totalNodes: 0, readyNodes: 0, workerNodes: 0, readyWorkerNodes: 0 };
+    let lastError = '';
     let attempt = 0;
+    let warnedTransient = false;
     const backendLabel = backend && backend !== 'unknown' ? ` (${backend})` : '';
     core.info(`Waiting for cluster nodes to be Ready${backendLabel}...`);
     while (Date.now() < deadline) {
         try {
             const { stdout } = await kubectl(['get', 'nodes', '-o', 'json'], kubeconfig);
             const parsed = JSON.parse(stdout);
-            lastResult = summarize(parsed);
-            const allReady = lastResult.totalNodes > 0 && lastResult.readyNodes === lastResult.totalNodes;
-            const enoughWorkers = lastResult.readyWorkerNodes >= minReadyNodes;
-            if (allReady && enoughWorkers) {
-                core.info(`✓ Cluster ready: ${lastResult.readyNodes}/${lastResult.totalNodes} nodes Ready` +
-                    (minReadyNodes > 0 ? ` (${lastResult.readyWorkerNodes} non-control-plane)` : ''));
-                return lastResult;
+            if (!isNodeListResult(parsed)) {
+                lastError = 'unexpected kubectl get nodes JSON shape';
+                if (!warnedTransient) {
+                    core.warning(`Readiness probe: ${lastError}`);
+                    warnedTransient = true;
+                }
             }
-            attempt += 1;
-            if (attempt === 3 || attempt % 10 === 0) {
-                // Surface progress on slow leases without spamming.
-                core.info(`  …still waiting: ${lastResult.readyNodes}/${lastResult.totalNodes} Ready, ` +
-                    `${lastResult.readyWorkerNodes}/${minReadyNodes} non-control-plane required`);
+            else {
+                lastResult = summarize(parsed);
+                lastError = '';
+                const allReady = lastResult.totalNodes > 0 && lastResult.readyNodes === lastResult.totalNodes;
+                const enoughWorkers = lastResult.readyWorkerNodes >= minReadyNodes;
+                if (allReady && enoughWorkers) {
+                    core.info(`✓ Cluster ready: ${lastResult.readyNodes}/${lastResult.totalNodes} nodes Ready` +
+                        (minReadyNodes > 0 ? ` (${lastResult.readyWorkerNodes} non-control-plane)` : ''));
+                    return lastResult;
+                }
+                attempt += 1;
+                if (attempt === 3 || attempt % 10 === 0) {
+                    // Surface progress on slow leases without spamming.
+                    core.info(`  …still waiting: ${lastResult.readyNodes}/${lastResult.totalNodes} Ready, ` +
+                        `${lastResult.readyWorkerNodes}/${minReadyNodes} non-control-plane required`);
+                }
             }
         }
         catch (err) {
-            core.debug(`kubectl get nodes failed (attempt ${attempt}): ${err instanceof Error ? err.message : String(err)}`);
+            if (isFatalExecError(err)) {
+                const code = err.code;
+                const msg = err instanceof Error ? err.message : String(err);
+                throw new Error(`Readiness probe failed fatally (${code}): ${msg}. ` +
+                    `Hint: ensure \`kubectl\` is on PATH and the kubeconfig at "${kubeconfig}" is readable.`);
+            }
+            lastError = err instanceof Error ? err.message : String(err);
+            if (!warnedTransient) {
+                core.warning(`Readiness probe (transient): ${lastError}`);
+                warnedTransient = true;
+            }
+            else {
+                core.debug(`Readiness probe transient error: ${lastError}`);
+            }
         }
         await sleep(2_000);
     }
+    const errSuffix = lastError ? `; last error: ${lastError}` : '';
     throw new Error(`Timed out after ${Math.round(timeoutMs / 1000)}s waiting for cluster readiness. ` +
         `Last seen: ${lastResult.readyNodes}/${lastResult.totalNodes} Ready, ` +
-        `${lastResult.readyWorkerNodes}/${minReadyNodes} non-control-plane required.`);
+        `${lastResult.readyWorkerNodes}/${minReadyNodes} non-control-plane required` +
+        errSuffix +
+        `.`);
 }
+/**
+ * Walk a NodeList and count totals, Ready nodes, and (separately)
+ * non-control-plane worker capacity. Exported for unit testing.
+ */
 function summarize(nodes) {
     let totalNodes = 0;
     let readyNodes = 0;
@@ -26151,6 +26301,9 @@ function summarize(nodes) {
         if (ready)
             readyNodes += 1;
         const labels = node.metadata?.labels ?? {};
+        // Both the modern `control-plane` label and the legacy `master` label
+        // (still present on older k3s/k8s installs) mark a node as control
+        // plane — exclude both from worker counts.
         const isControlPlane = 'node-role.kubernetes.io/control-plane' in labels ||
             'node-role.kubernetes.io/master' in labels;
         if (!isControlPlane) {

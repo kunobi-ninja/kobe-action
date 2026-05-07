@@ -44,7 +44,7 @@ jobs:
 | `audience` | No | `kobe-system` | OIDC token audience |
 | `timeout` | No | `5m` | Max time to wait for the lease to become **Bound** (API server reachable) |
 | `wait-for-ready` | No | `false` | After Bound, also wait for cluster Nodes to be Ready. Default off for backward compatibility — set `true` if your tests query the cluster immediately. |
-| `min-ready-nodes` | No | `1` | Minimum non-control-plane nodes that must be Ready (only when `wait-for-ready=true`). Set `0` for control-plane-only clusters. |
+| `min-ready-nodes` | No | `0` | Minimum non-control-plane nodes that must be Ready (only when `wait-for-ready=true`). Default `0` accepts single-node k3s/k0s server pools (the most common CI shape). Set `1` or higher for multi-node setups that need a worker. |
 | `ready-timeout` | No | `2m` | Max time to wait for cluster readiness after Bound. Independent from `timeout`. |
 
 ## Outputs
@@ -54,7 +54,7 @@ jobs:
 | `kubeconfig-path` | Path to the kubeconfig file |
 | `lease-id` | Lease ID |
 | `cluster-name` | Name of the claimed cluster |
-| `cluster-backend` | Auto-detected backend: `k3s` \| `k0s` \| `vcluster` \| `kubernetes` \| `unknown`. `kubernetes` covers vanilla / kind / capi-managed clusters (their `gitVersion` carries no distro marker). |
+| `cluster-backend` | Auto-detected backend: `k3s` \| `k0s` \| `kubernetes` \| `unknown`. The `kubernetes` value is a generic bucket — it covers vanilla, kind, capi-managed, EKS/GKE/AKS, and vcluster (which reports the underlying distro's `gitVersion`, typically k3s). |
 
 ## Waiting for cluster readiness
 
@@ -68,10 +68,14 @@ Opt in with one input:
     endpoint: https://kobe.example.com
     pool: ci-k3s-small
     wait-for-ready: true
-    # Defaults: min-ready-nodes=1, ready-timeout=2m
+    # Defaults work for single-node pools (min-ready-nodes=0).
+    # For multi-node setups, require at least one worker:
+    # min-ready-nodes: 1
 ```
 
 Auto-discovery: every supported backend (k3s, k0s, kind, vcluster, capi-managed) reports worker capacity through Node objects with a standard `Ready` condition. The action lists nodes and waits until they're all Ready — no per-backend configuration needed.
+
+Strict input parsing: `wait-for-ready`, `min-ready-nodes`, and `ready-timeout` reject unrecognized values (e.g. `wait-for-ready: ture`, `min-ready-nodes: abc`, `ready-timeout: 30sec`) at job startup with a clear error. Empty values fall through to the documented defaults.
 
 ## Migration from v1
 

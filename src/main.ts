@@ -4,25 +4,7 @@ import * as path from 'path';
 import { getOidcToken } from './oidc';
 import { KobeClient } from './client';
 import { detectBackend, waitForReady } from './readiness';
-
-function parseTimeout(timeout: string): number {
-  const match = timeout.match(/^(\d+)(m|s|h)$/);
-  if (!match) return 300000; // default 5m
-  const value = parseInt(match[1], 10);
-  switch (match[2]) {
-    case 'h': return value * 3600000;
-    case 'm': return value * 60000;
-    case 's': return value * 1000;
-    default: return 300000;
-  }
-}
-
-function parseBool(input: string, fallback: boolean): boolean {
-  const v = input.trim().toLowerCase();
-  if (v === 'true' || v === '1' || v === 'yes') return true;
-  if (v === 'false' || v === '0' || v === 'no' || v === '') return fallback;
-  return fallback;
-}
+import { parseBool, parseDuration, parseNonNegInt } from './inputs';
 
 async function run(): Promise<void> {
   try {
@@ -30,12 +12,16 @@ async function run(): Promise<void> {
     const pool = core.getInput('pool', { required: true });
     const ttl = core.getInput('ttl') || '1h';
     const audience = core.getInput('audience') || 'kobe-system';
-    const timeout = parseTimeout(core.getInput('timeout') || '5m');
+    const timeout = parseDuration(core.getInput('timeout'), 5 * 60_000);
     // Readiness-wait inputs (default off — backward-compatible: existing
     // consumers see no behavior change).
     const waitReady = parseBool(core.getInput('wait-for-ready'), false);
-    const minReadyNodes = parseInt(core.getInput('min-ready-nodes') || '1', 10);
-    const readyTimeout = parseTimeout(core.getInput('ready-timeout') || '2m');
+    // Default 0 so single-node k3s/k0s server pools (the most common CI
+    // shape) pass the gate without explicit configuration. Multi-node
+    // setups should set `min-ready-nodes: 1` (or higher) to require a
+    // worker. See README "Waiting for cluster readiness".
+    const minReadyNodes = parseNonNegInt(core.getInput('min-ready-nodes'), 0);
+    const readyTimeout = parseDuration(core.getInput('ready-timeout'), 2 * 60_000);
 
     // Get OIDC token
     core.info('Requesting OIDC token...');
@@ -79,10 +65,9 @@ async function run(): Promise<void> {
     fs.writeFileSync(kubeconfigPath, kubeconfig, { mode: 0o600 });
 
     // Always probe the backend — it's free info that lets downstream
-    // steps run backend-aware logic without re-querying. Backend detection
-    // depends on `kubectl` being on PATH; if it isn't, we surface
-    // `unknown` and continue (consumers who don't need this output won't
-    // notice).
+    // steps run backend-aware logic without re-querying. Failures
+    // surface as warnings (not silent) but never fail the action;
+    // the `cluster-backend` output is documented as informational.
     const backend = await detectBackend(kubeconfigPath);
     if (backend !== 'unknown') {
       core.info(`Detected cluster backend: ${backend}`);
