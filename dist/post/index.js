@@ -25792,6 +25792,69 @@ function sleep(ms) {
 
 /***/ }),
 
+/***/ 6434:
+/***/ (function(__unused_webpack_module, exports, __nccwpck_require__) {
+
+"use strict";
+
+var __createBinding = (this && this.__createBinding) || (Object.create ? (function(o, m, k, k2) {
+    if (k2 === undefined) k2 = k;
+    var desc = Object.getOwnPropertyDescriptor(m, k);
+    if (!desc || ("get" in desc ? !m.__esModule : desc.writable || desc.configurable)) {
+      desc = { enumerable: true, get: function() { return m[k]; } };
+    }
+    Object.defineProperty(o, k2, desc);
+}) : (function(o, m, k, k2) {
+    if (k2 === undefined) k2 = k;
+    o[k2] = m[k];
+}));
+var __setModuleDefault = (this && this.__setModuleDefault) || (Object.create ? (function(o, v) {
+    Object.defineProperty(o, "default", { enumerable: true, value: v });
+}) : function(o, v) {
+    o["default"] = v;
+});
+var __importStar = (this && this.__importStar) || (function () {
+    var ownKeys = function(o) {
+        ownKeys = Object.getOwnPropertyNames || function (o) {
+            var ar = [];
+            for (var k in o) if (Object.prototype.hasOwnProperty.call(o, k)) ar[ar.length] = k;
+            return ar;
+        };
+        return ownKeys(o);
+    };
+    return function (mod) {
+        if (mod && mod.__esModule) return mod;
+        var result = {};
+        if (mod != null) for (var k = ownKeys(mod), i = 0; i < k.length; i++) if (k[i] !== "default") __createBinding(result, mod, k[i]);
+        __setModuleDefault(result, mod);
+        return result;
+    };
+})();
+Object.defineProperty(exports, "__esModule", ({ value: true }));
+exports.getOidcToken = getOidcToken;
+const core = __importStar(__nccwpck_require__(7484));
+const http_client_1 = __nccwpck_require__(4844);
+async function getOidcToken(audience) {
+    const requestToken = process.env.ACTIONS_ID_TOKEN_REQUEST_TOKEN;
+    const requestUrl = process.env.ACTIONS_ID_TOKEN_REQUEST_URL;
+    if (!requestToken || !requestUrl) {
+        throw new Error('OIDC token not available. Add "permissions: id-token: write" to your job.');
+    }
+    const http = new http_client_1.HttpClient('kobe-action');
+    const url = `${requestUrl}&audience=${encodeURIComponent(audience)}`;
+    const response = await http.getJson(url, {
+        Authorization: `bearer ${requestToken}`,
+    });
+    if (!response.result?.value) {
+        throw new Error('Failed to obtain OIDC token from GitHub');
+    }
+    core.setSecret(response.result.value);
+    return response.result.value;
+}
+
+
+/***/ }),
+
 /***/ 6661:
 /***/ (function(__unused_webpack_module, exports, __nccwpck_require__) {
 
@@ -25831,16 +25894,31 @@ var __importStar = (this && this.__importStar) || (function () {
     };
 })();
 Object.defineProperty(exports, "__esModule", ({ value: true }));
+exports.post = post;
 const core = __importStar(__nccwpck_require__(7484));
 const fs = __importStar(__nccwpck_require__(9896));
 const path = __importStar(__nccwpck_require__(6928));
+const oidc_1 = __nccwpck_require__(6434);
 const client_1 = __nccwpck_require__(9592);
 async function post() {
     const leaseId = core.getState('lease-id');
     const endpoint = core.getState('endpoint');
-    const token = core.getState('token');
-    if (!leaseId || !endpoint || !token) {
+    if (!leaseId || !endpoint) {
         core.info('No lease to release (claim may have failed)');
+        return;
+    }
+    // Re-mint the OIDC token rather than reusing the one minted in `main`.
+    // GitHub Actions runtime ID tokens are short-lived (≲10 min); a job
+    // that runs longer than the JWT's lifetime would 401 against an
+    // audience-validating server when the cached token is replayed here.
+    // Keep this in lockstep with `main.ts` writing `audience` to state.
+    const audience = core.getState('audience') || 'kobe-system';
+    let token;
+    try {
+        token = await (0, oidc_1.getOidcToken)(audience);
+    }
+    catch (err) {
+        core.warning(`Skipping lease release for ${leaseId}: failed to mint OIDC token: ${err instanceof Error ? err.message : String(err)}`);
         return;
     }
     core.info(`Releasing cluster (lease: ${leaseId})...`);
@@ -25856,7 +25934,9 @@ async function post() {
         // ignore
     }
 }
-post();
+if (require.main === require.cache[eval('__filename')]) {
+    post();
+}
 
 
 /***/ }),

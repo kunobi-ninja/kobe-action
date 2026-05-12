@@ -30180,9 +30180,13 @@ async function run() {
         // Get OIDC token
         core.info('Requesting OIDC token...');
         const token = await (0, oidc_1.getOidcToken)(audience);
-        // Save for post step
+        // Save for post step. We persist `audience` rather than `token`
+        // because GitHub's runtime ID tokens are short-lived (≲10 min) and
+        // the post hook can fire well after a long-running job — replaying
+        // a cached JWT then yields HTTP 401 on the release call. The post
+        // step re-mints a fresh token via `getOidcToken(audience)`.
         core.saveState('endpoint', endpoint);
-        core.saveState('token', token);
+        core.saveState('audience', audience);
         // Create lease
         const client = new client_1.KobeClient(endpoint, token);
         core.info(`Claiming cluster from pool "${pool}" with TTL ${ttl}...`);
