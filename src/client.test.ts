@@ -162,6 +162,62 @@ describe('KobeClient.createLease', () => {
     expect(scope.isDone()).toBe(true);
   });
 
+  it('surfaces the server detail and reason from a 503 body', async () => {
+    instantSleep();
+    const detail =
+      'no Ready cluster; pool ci-small phase=Failing, consecutiveFailures=10, ' +
+      'lastFailureReason=10 instance(s) not reaching Ready';
+    const scope = nock(ENDPOINT)
+      .post('/v1/leases')
+      .times(6)
+      .reply(
+        503,
+        { error: 'Pool cannot satisfy a new lease', detail, reason: 'pool_exhausted' },
+        { 'Retry-After': '30' }
+      );
+
+    const client = new KobeClient(ENDPOINT, TOKEN);
+    await expect(client.createLease('ci-small', '1h')).rejects.toThrow(
+      /HTTP 503.*Pool cannot satisfy a new lease — no Ready cluster.*\[reason: pool_exhausted\]/
+    );
+
+    // The operator diagnosis is logged once (deduped across retries),
+    // so a CI reader sees *why* instead of a bare status code.
+    const warnings = vi.mocked(core.warning).mock.calls.map(c => String(c[0]));
+    expect(warnings.filter(w => w.includes('consecutiveFailures=10'))).toHaveLength(1);
+    // The per-retry line names the machine-readable reason.
+    const infos = vi.mocked(core.info).mock.calls.map(c => String(c[0]));
+    expect(infos.some(i => i.includes('503, pool_exhausted'))).toBe(true);
+    expect(scope.isDone()).toBe(true);
+  });
+
+  it('honours Retry-After for the retry delay, capped at 30s', async () => {
+    // No instantSleep: capture the requested delays directly by stubbing
+    // setTimeout to record ms and fire immediately.
+    const delays: number[] = [];
+    vi.spyOn(global, 'setTimeout').mockImplementation(((cb: () => void, ms?: number) => {
+      delays.push(ms ?? 0);
+      queueMicrotask(cb);
+      return 0 as unknown as NodeJS.Timeout;
+    }) as typeof setTimeout);
+
+    const scope = nock(ENDPOINT)
+      .post('/v1/leases')
+      .reply(503, { error: 'x' }, { 'Retry-After': '7' })
+      .post('/v1/leases')
+      .reply(503, { error: 'x' }, { 'Retry-After': '600' })
+      .post('/v1/leases')
+      .reply(200, lease({ id: 'lease-ra', phase: 'Bound' }));
+
+    const client = new KobeClient(ENDPOINT, TOKEN);
+    await client.createLease('ci-small', '1h');
+
+    // Attempt 1: server's 7s beats the 1s base backoff. Attempt 2:
+    // server's 600s is capped at 30s.
+    expect(delays).toEqual([7000, 30000]);
+    expect(scope.isDone()).toBe(true);
+  });
+
   it('throws immediately on 422 with no retry', async () => {
     const scope = nock(ENDPOINT)
       .post('/v1/leases')
