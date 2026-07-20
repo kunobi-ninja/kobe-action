@@ -13,9 +13,16 @@ export interface LeaseResponse {
 export interface KobeError {
   error?: string;
   message?: string;
+  /** Operator diagnosis: pool phase, consecutive failures, last failure reason. */
+  detail?: string;
+  /** Machine-readable rejection class, e.g. `pool_exhausted`, `capacity_blocked`. */
+  reason?: string;
 }
 
 const RETRY_DELAYS = [1000, 2000, 4000, 8000, 16000]; // exponential backoff
+/** Ceiling on a server-suggested Retry-After so a pool in a long backoff
+ * window can't stall CI for minutes per attempt. */
+const MAX_RETRY_DELAY_MS = 30_000;
 
 export class KobeClient {
   private http: HttpClient;
@@ -42,6 +49,7 @@ export class KobeClient {
     // (`kobe lease <pool>`).
     const body = JSON.stringify({ profile: pool, ttl });
 
+    let lastDetail: string | undefined;
     for (let attempt = 0; attempt <= RETRY_DELAYS.length; attempt++) {
       const response = await this.http.post(url, body);
       const responseBody = await response.readBody();
@@ -52,8 +60,22 @@ export class KobeClient {
       }
 
       if (statusCode === 503 && attempt < RETRY_DELAYS.length) {
-        const delay = RETRY_DELAYS[attempt];
-        core.info(`Pool exhausted (503), retrying in ${delay / 1000}s... (attempt ${attempt + 1}/${RETRY_DELAYS.length})`);
+        const err = tryParseKobeError(responseBody);
+        const reason = err?.reason || 'pool unavailable';
+        // Surface the operator's diagnosis (pool phase, consecutive
+        // failures, last failure reason) once per distinct message —
+        // this is what tells a CI reader *why* the pool can't serve,
+        // not just that it returned 503.
+        if (err?.detail && err.detail !== lastDetail) {
+          lastDetail = err.detail;
+          core.warning(`Pool cannot satisfy the lease (${reason}): ${err.detail}`);
+        }
+        const retryAfterMs = parseRetryAfterMs(response.message.headers['retry-after']);
+        const delay = Math.min(
+          Math.max(RETRY_DELAYS[attempt], retryAfterMs ?? 0),
+          MAX_RETRY_DELAY_MS
+        );
+        core.info(`Pool unavailable (503, ${reason}), retrying in ${delay / 1000}s... (attempt ${attempt + 1}/${RETRY_DELAYS.length})`);
         await sleep(delay);
         continue;
       }
@@ -125,13 +147,32 @@ export class KobeClient {
   }
 }
 
-function tryParseError(body: string): string {
+function tryParseKobeError(body: string): KobeError | undefined {
   try {
-    const parsed = JSON.parse(body) as KobeError;
-    return parsed.error || parsed.message || body;
+    return JSON.parse(body) as KobeError;
   } catch {
-    return body;
+    return undefined;
   }
+}
+
+function tryParseError(body: string): string {
+  const parsed = tryParseKobeError(body);
+  if (!parsed) return body;
+  const base = parsed.error || parsed.message;
+  if (!base) return body;
+  const withDetail = parsed.detail ? `${base} — ${parsed.detail}` : base;
+  return parsed.reason ? `${withDetail} [reason: ${parsed.reason}]` : withDetail;
+}
+
+/** Parse an RFC 9110 `Retry-After: <seconds>` header value to millis.
+ * HTTP-date form and garbage both yield undefined (caller falls back
+ * to its own backoff). */
+function parseRetryAfterMs(value: string | string[] | undefined): number | undefined {
+  const raw = Array.isArray(value) ? value[0] : value;
+  if (!raw) return undefined;
+  const secs = Number(raw.trim());
+  if (!Number.isFinite(secs) || secs < 0) return undefined;
+  return secs * 1000;
 }
 
 function sleep(ms: number): Promise<void> {
